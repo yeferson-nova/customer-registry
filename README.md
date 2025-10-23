@@ -1,78 +1,163 @@
-# customer-registry
+# Microservicio de Registro de Clientes
 
-This project uses Quarkus, the Supersonic Subatomic Java Framework.
+## 1. Descripción General
 
-If you want to learn more about Quarkus, please visit its website: <https://quarkus.io/>.
+Este proyecto es un microservicio RESTful para la gestión de clientes, construido con Java 21 y Quarkus. Sigue los principios de **Domain-Driven Design (DDD)** para garantizar un código limpio, escalable y mantenible. La API está securizada mediante JWT y documentada con OpenAPI.
 
-## Running the application in dev mode
+### 1.1. Stack Tecnológico Principal
 
-You can run your application in dev mode that enables live coding using:
+- **Lenguaje**: Java 21
+- **Framework**: Quarkus 3.11.2
+- **Persistencia**: Hibernate ORM con Panache (Estrategia de Repositorio)
+- **Base de Datos (Desarrollo/Pruebas)**: H2 en memoria
+- **Seguridad**: MicroProfile JWT (quarkus-smallrye-jwt)
+- **Documentación**: OpenAPI (quarkus-smallrye-openapi)
+- **Mapeo**: MapStruct
+- **Build Tool**: Maven
 
-```shell script
-./mvnw quarkus:dev
+---
+
+## 2. Arquitectura del Proyecto (Domain-Driven Design)
+
+El proyecto está estructurado en tres capas principales, siguiendo las mejores prácticas de DDD para separar responsabilidades y aislar la lógica de negocio de los detalles de infraestructura.
+
+```
++-----------------------------------------------------------------+
+| Capa de Infraestructura (El "CÓMO" técnico)                     |
+|-----------------------------------------------------------------|
+| - ClientResource (Endpoints REST)                               |
+| - ClientRepository (Implementación Panache)                     |
+| - GlobalExceptionHandler                                        |
+| - Configuración de BD, JWT, etc.                                |
++-----------------------------------------------------------------+
+      ^ (depende de)
++-----------------------------------------------------------------+
+| Capa de Aplicación (El "QUÉ" hace la aplicación)               |
+|-----------------------------------------------------------------|
+| - ClientApplicationService (Casos de Uso)                       |
+| - CreateClientRequest / ClientResponse (DTOs)                   |
+| - ClientMapper (Interfaz MapStruct)                             |
++-----------------------------------------------------------------+
+      ^ (depende de)
++-----------------------------------------------------------------+
+| Capa de Dominio (El "PORQUÉ" del negocio)                       |
+|-----------------------------------------------------------------|
+| - Client, Country, Status (Entidades)                           |
+| - ClientRepository (Interfaz)                                   |
+| - CountryValidationStrategy (Servicio de Dominio)               |
++-----------------------------------------------------------------+
 ```
 
-> **_NOTE:_**  Quarkus now ships with a Dev UI, which is available in dev mode only at <http://localhost:8080/q/dev/>.
+### 2.1. Capa de Dominio (`domain`)
 
-## Packaging and running the application
+Es el corazón de la aplicación. Contiene toda la lógica y las reglas de negocio, sin depender de ninguna tecnología externa.
 
-The application can be packaged using:
+- **Modelos (`domain.model`)**: Entidades JPA como `Client`, `Country`, `Gender` y `Status`. Representan los conceptos de negocio.
+- **Repositorios (`domain.repository`)**: Interfaces (ej. `ClientRepository`) que definen los contratos para la persistencia, sin conocer la implementación (Panache, en nuestro caso).
+- **Servicios de Dominio (`domain.service`)**: Contiene la lógica de negocio compleja que no encaja en una sola entidad, como el Patrón Strategy para la validación.
 
-```shell script
-./mvnw package
+### 2.2. Capa de Aplicación (`application`)
+
+Orquesta los casos de uso del sistema. Actúa como un intermediario entre la infraestructura y el dominio.
+
+- **Servicios de Aplicación (`application.service`)**: Clases como `ClientApplicationService` que exponen las funcionalidades principales (ej. `createClient`, `updateClient`). No contienen lógica de negocio, sino que coordinan las llamadas a los repositorios y servicios de dominio.
+- **DTOs (`application.dto`)**: Objetos de Transferencia de Datos (implementados como Java Records) para las solicitudes (`CreateClientRequest`) y respuestas (`ClientResponse`) de la API. Aquí se aplican las validaciones de entrada.
+- **Mappers (`application.mapper`)**: Interfaces de MapStruct (`ClientMapper`) para convertir DTOs a Entidades y viceversa, evitando la exposición de las entidades del dominio en la API.
+
+### 2.3. Capa de Infraestructura (`infrastructure`)
+
+Contiene todo lo relacionado con tecnologías externas: la API web, la implementación de la base de datos, etc.
+
+- **Recursos (`infrastructure.resource`)**: Endpoints REST JAX-RS (`ClientResource`) que manejan las peticiones HTTP, la autenticación y la serialización JSON.
+- **Manejo de Excepciones (`infrastructure.exception`)**: Mappers de excepciones (`GlobalExceptionHandler`) que traducen los errores de negocio en respuestas HTTP apropiadas (4xx, 5xx).
+
+---
+
+## 3. Lógica de Negocio: Patrón Strategy para Validación
+
+Para cumplir con el requisito de que la validación del campo `numCTA` varíe según el país, se implementó el Patrón Strategy.
+
+1.  **Interfaz `CountryValidationStrategy`**: Define el contrato con un único método `validate(String numCTA, String countryCode)`.
+2.  **Implementación para Chile (`ChileValidationStrategy`)**: Valida que el `numCTA` para clientes de Chile comience con `"003"`. Si no, lanza una `InvalidAccountException` (resultando en un `400 Bad Request`).
+3.  **Implementación por Defecto (`DefaultValidationStrategy`)**: Se aplica a todos los demás países y no realiza ninguna validación específica.
+4.  **Selector (`ClientValidationService`)**: Este servicio de dominio inyecta todas las implementaciones de la estrategia y, basándose en el código del país del cliente, selecciona y ejecuta la estrategia correcta.
+
+Este patrón permite añadir nuevas reglas de validación para otros países de forma limpia y desacoplada, simplemente creando una nueva clase que implemente la interfaz, sin modificar el código existente.
+
+---
+
+## 4. Seguridad y Documentación
+
+### 4.1. Generación de Claves y Tokens JWT
+
+La API está securizada con JWT usando el algoritmo `RS256` (firma asimétrica).
+
+**Paso 1: Generar Claves (si no existen)**
+
+Las claves se generan con `openssl` y se almacenan en `src/main/resources/tokens/`.
+
+```bash
+# Navegar a la carpeta de tokens
+cd src/main/resources/tokens/
+
+# Generar nueva clave privada
+openssl genpkey -algorithm RSA -out private-key.pem -pkeyopt rsa_keygen_bits:2048
+
+# Generar la clave pública correspondiente
+openssl rsa -pubout -in private-key.pem -out public-key.pem
 ```
 
-It produces the `quarkus-run.jar` file in the `target/quarkus-app/` directory.
-Be aware that it’s not an _über-jar_ as the dependencies are copied into the `target/quarkus-app/lib/` directory.
+**Paso 2: Generar Tokens para Pruebas**
 
-The application is now runnable using `java -jar target/quarkus-app/quarkus-run.jar`.
+El proyecto incluye una clase de prueba para generar tokens válidos con los roles `user` y `admin`. Para generar nuevos tokens, ejecuta el siguiente comando Maven desde la raíz del proyecto:
 
-If you want to build an _über-jar_, execute the following command:
-
-```shell script
-./mvnw package -Dquarkus.package.jar.type=uber-jar
+```bash
+# Ejecuta la prueba que genera los tokens
+mvn test -Dtest=TokenGenerationTest -DskipTests=false
 ```
 
-The application, packaged as an _über-jar_, is now runnable using `java -jar target/*-runner.jar`.
+La salida en la consola mostrará los tokens listos para ser copiados y usados en Postman o `curl`. Estos tokens tienen una validez de 1 hora.
 
-## Creating a native executable
+### 4.2. Documentación OpenAPI y Postman
 
-You can create a native executable using:
+La API está completamente documentada usando OpenAPI. Quarkus genera la especificación automáticamente.
 
-```shell script
-./mvnw package -Dnative
+**Cómo importar la colección en Postman:**
+
+1.  Con la aplicación corriendo, abre Postman.
+2.  Haz clic en el botón **Import**.
+3.  Selecciona la pestaña **Link**.
+4.  Pega la siguiente URL en el campo de texto:
+    ```
+    http://localhost:8080/q/openapi
+    ```
+5.  Haz clic en **Continue** y luego en **Import**. Postman creará automáticamente una nueva colección con todos los endpoints, sus parámetros y descripciones.
+
+Para probar los endpoints, recuerda añadir el token JWT en la pestaña **Authorization** de cada petición (Type: `Bearer Token`).
+
+---
+
+## 5. Cómo Ejecutar el Proyecto
+
+### Prerrequisitos
+
+- JDK 21
+- Apache Maven 3.8+
+
+### Ejecución en Modo Desarrollo
+
+Para iniciar la aplicación con Live Reloading, ejecuta:
+
+```bash
+mvn quarkus:dev
 ```
 
-Or, if you don't have GraalVM installed, you can run the native executable build in a container using:
+La aplicación estará disponible en `http://localhost:8080`.
 
-```shell script
-./mvnw package -Dnative -Dquarkus.native.container-build=true
+### Ejecución de Pruebas
+
+Para ejecutar todas las pruebas de integración y unitarias, usa:
+
+```bash
+mvn test
 ```
-
-You can then execute your native executable with: `./target/customer-registry-1.0.0-SNAPSHOT-runner`
-
-If you want to learn more about building native executables, please consult <https://quarkus.io/guides/maven-tooling>.
-
-## Related Guides
-
-- REST resources for Hibernate ORM with Panache ([guide](https://quarkus.io/guides/rest-data-panache)): Generate Jakarta REST resources for your Hibernate Panache entities and repositories
-- JDBC Driver - H2 ([guide](https://quarkus.io/guides/datasource)): Connect to the H2 database via JDBC
-- Hibernate Validator ([guide](https://quarkus.io/guides/validation)): Validate object properties (field, getter) and method parameters for your beans (REST, CDI, Jakarta Persistence)
-- Camel MapStruct ([guide](https://camel.apache.org/camel-quarkus/latest/reference/extensions/mapstruct.html)): Type Conversion using Mapstruct
-- SmallRye OpenAPI ([guide](https://quarkus.io/guides/openapi-swaggerui)): Document your REST APIs with OpenAPI - comes with Swagger UI
-- REST Jackson ([guide](https://quarkus.io/guides/rest#json-serialisation)): Jackson serialization support for Quarkus REST. This extension is not compatible with the quarkus-resteasy extension, or any of the extensions that depend on it
-
-## Provided Code
-
-### REST Data with Panache
-
-Generating Jakarta REST resources with Panache
-
-[Related guide section...](https://quarkus.io/guides/rest-data-panache)
-
-
-### REST
-
-Easily start your REST Web Services
-
-[Related guide section...](https://quarkus.io/guides/getting-started-reactive#reactive-jax-rs-resources)
